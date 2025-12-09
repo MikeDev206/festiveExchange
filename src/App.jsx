@@ -1,264 +1,571 @@
 import React, { useState, useEffect } from "react";
 import { initializeApp } from "firebase/app";
-import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
 import {
-  getFirestore, collection, addDoc, onSnapshot, deleteDoc, doc, setDoc, updateDoc, writeBatch
+  getAuth,
+  signInAnonymously,
+  onAuthStateChanged,
+  signOut,
+} from "firebase/auth";
+import {
+  getFirestore,
+  collection,
+  doc,
+  onSnapshot,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  getDoc,
 } from "firebase/firestore";
 import {
-  Gift, User, Users, Baby, Smile, Trash2, Shuffle, Eye, EyeOff, Send, DollarSign, FileText
+  Gift,
+  LogIn,
+  Plus,
+  Trash2,
+  Shuffle,
+  Share2,
+  ArrowRight,
+  User,
+  LogOut,
+  Search,
+  Users,
 } from "lucide-react";
 
-// --- CONFIGURACIÓN BLINDADA ---
-// NOTA: El entorno de vista previa aquí no soporta 'import.meta.env'.
-// Cuando copies esto a tu VS Code, usa la sección "EN LOCAL" y comenta la sección "TEMPORAL".
+// --- CONFIGURACIÓN ---
+const app = initializeApp({
+  apiKey: import.meta.env.VITE_API_KEY,
+  authDomain: import.meta.env.VITE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_APP_ID,
+});
 
-const firebaseConfig = {
-  // --- EN LOCAL (VITE): DESCOMENTA ESTAS LÍNEAS EN TU PROYECTO ---
-   apiKey: import.meta.env.VITE_API_KEY,
-   authDomain: import.meta.env.VITE_AUTH_DOMAIN,
-   projectId: import.meta.env.VITE_PROJECT_ID,
-   storageBucket: import.meta.env.VITE_STORAGE_BUCKET,
-   messagingSenderId: import.meta.env.VITE_MESSAGING_SENDER_ID,
-   appId: import.meta.env.VITE_APP_ID
-
-  // --- TEMPORAL: Solo para que el código compile en esta vista previa ---
-  // apiKey: "TU_API_KEY", 
-  // authDomain: "TU_AUTH_DOMAIN",
-  // projectId: "TU_PROJECT_ID",
-  // storageBucket: "TU_STORAGE_BUCKET",
-  // messagingSenderId: "TU_SENDER_ID",
-  // appId: "TU_APP_ID"
-};
-
-const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const EVENT_ID = "navidad_2024";
 
-const CATEGORIES = {
-  baby: { label: "Bebé", icon: Baby, color: "text-pink-600", bg: "bg-pink-100" },
-  kid: { label: "Niño/a", icon: Smile, color: "text-blue-600", bg: "bg-blue-100" },
-  adult: { label: "Adulto", icon: User, color: "text-emerald-600", bg: "bg-emerald-100" },
-  senior: { label: "Abuelo/a", icon: Users, color: "text-purple-600", bg: "bg-purple-100" },
-};
+const COUNTRY_CODES = [
+  { code: "52", label: "🇲🇽 MX (+52)" },
+  { code: "1", label: "🇺🇸 US (+1)" },
+  { code: "34", label: "🇪🇸 ES (+34)" },
+  { code: "54", label: "🇦🇷 AR (+54)" },
+  { code: "57", label: "🇨🇴 CO (+57)" },
+  { code: "56", label: "🇨🇱 CL (+56)" },
+  { code: "51", label: "🇵🇪 PE (+51)" },
+];
 
 export default function App() {
   const [user, setUser] = useState(null);
+  const [eventId, setEventId] = useState(localStorage.getItem("eid") || "");
+  const [eventData, setEventData] = useState(null);
   const [participants, setParticipants] = useState([]);
-  const [matches, setMatches] = useState([]);
-  const [config, setConfig] = useState({ budget: "500", eventName: "Intercambio" });
-  const [form, setForm] = useState({ name: "", wishlist: "", category: "adult", phone: "" });
-  const [showResults, setShowResults] = useState(false);
+  const [results, setResults] = useState([]);
 
-  // 1. Auth
-  useEffect(() => {
-    const login = async () => {
-      try {
-        await signInAnonymously(auth);
-      } catch (e) {
-        console.error("Auth error:", e);
-        // Si sale este error, revisa que 'Authentication' > 'Sign-in method' > 'Anónimo' esté habilitado en Firebase Console
-      }
-    };
-    login();
-    return onAuthStateChanged(auth, setUser);
-  }, []);
+  // Inputs
+  const [joinCode, setJoinCode] = useState("");
+  const [newPerson, setNewPerson] = useState({
+    name: "",
+    phone: "",
+    likes: "",
+  });
+  const [phoneCode, setPhoneCode] = useState("52");
+  const [newEvent, setNewEvent] = useState({ name: "", budget: "" });
 
-  // 2. Data Sync
-  useEffect(() => {
-    if (!user) return;
+  // ESTADO NUEVO: Búsqueda de resultados para invitados
+  const [searchPhone, setSearchPhone] = useState("");
 
-    // Escuchar Participantes
-    const unsubPart = onSnapshot(
-      collection(db, "eventos", EVENT_ID, "participantes"),
-      (snap) => {
-        const data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        // Ordenar por fecha de creación para mantener el orden visual
-        setParticipants(data.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0)));
-      }
-    );
+  // 1. Auth Listener
+  useEffect(() => auth.onAuthStateChanged(setUser), []);
 
-    // Escuchar RESULTADOS (Single Source of Truth)
-    const unsubMatch = onSnapshot(
-      doc(db, "eventos", EVENT_ID, "sorteo", "resultados_oficiales"),
-      (docSnap) => {
-        if (docSnap.exists() && docSnap.data().pairs) {
-          try {
-            setMatches(JSON.parse(docSnap.data().pairs));
-          } catch (e) {
-            console.error("Error leyendo sorteo", e);
-            setMatches([]);
-          }
-        } else {
-          setMatches([]);
-        }
-      }
-    );
-
-    // Escuchar Config
-    const unsubConfig = onSnapshot(doc(db, "eventos", EVENT_ID), (s) => {
-      if (s.exists()) setConfig(s.data());
-    });
-
-    return () => { unsubPart(); unsubMatch(); unsubConfig(); };
-  }, [user]);
-
-  // 3. Logic
-  const saveConfig = async (newConfig) => {
-    const updated = { ...config, ...newConfig };
-    setConfig(updated);
-    const ref = doc(db, "eventos", EVENT_ID);
-    try { await updateDoc(ref, updated); } catch { await setDoc(ref, updated); }
+  // 2. Full Logout
+  const fullLogout = async () => {
+    try {
+      await signOut(auth);
+      localStorage.removeItem("eid");
+      setEventId("");
+      setEventData(null);
+      setParticipants([]);
+    } catch (e) {
+      console.error(e);
+    }
   };
 
-  const handleRegister = async (e) => {
-    e.preventDefault();
-    if (!form.name) return;
-    try {
-      await addDoc(collection(db, "eventos", EVENT_ID, "participantes"), {
-        ...form, createdAt: Date.now()
-      });
-      setForm({ name: "", wishlist: "", category: "adult", phone: "" });
-    } catch (error) {
-      console.error("Error al registrar:", error);
-      alert("Error al registrar. Revisa la consola.");
+  // 3. Sync Data
+  useEffect(() => {
+    if (!user || !eventId) return;
+
+    const checkAndListen = async () => {
+      const docRef = doc(db, "events", eventId);
+      const docSnap = await getDoc(docRef);
+
+      if (!docSnap.exists()) {
+        localStorage.removeItem("eid");
+        setEventId("");
+        return alert("El evento ya no existe.");
+      }
+
+      const unsubEvent = onSnapshot(docRef, (s) => setEventData(s.data()));
+      const unsubParts = onSnapshot(
+        collection(db, "events", eventId, "list"),
+        (s) => setParticipants(s.docs.map((d) => ({ id: d.id, ...d.data() })))
+      );
+      const unsubRes = onSnapshot(
+        doc(db, "events", eventId, "meta", "results"),
+        (s) => {
+          if (s.exists()) setResults(JSON.parse(s.data().data));
+        }
+      );
+
+      return () => {
+        unsubEvent();
+        unsubParts();
+        unsubRes();
+      };
+    };
+    checkAndListen();
+  }, [user, eventId]);
+
+  // --- ACTIONS ---
+  const login = () => signInAnonymously(auth).catch(alert);
+
+  const createEvent = async () => {
+    if (!newEvent.name.trim()) return alert("Nombre obligatorio.");
+    if (!newEvent.budget || Number(newEvent.budget) <= 0)
+      return alert("Presupuesto inválido.");
+    const code = Math.random().toString(36).substr(2, 6).toUpperCase();
+    await setDoc(doc(db, "events", code), {
+      name: newEvent.name,
+      budget: newEvent.budget,
+      admin: user.uid,
+      status: "open",
+    });
+    setEventId(code);
+    localStorage.setItem("eid", code);
+  };
+
+  const joinEvent = () => {
+    const code = joinCode.trim().toUpperCase();
+    if (!code) return;
+    setEventId(code);
+    localStorage.setItem("eid", code);
+  };
+
+  const handleEnter = (e, action) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      action();
     }
+  };
+
+  const addPerson = async () => {
+    const name = newPerson.name.trim();
+    const phoneRaw = newPerson.phone.trim();
+    const likes = newPerson.likes.trim();
+
+    if (!name) return alert("Falta nombre.");
+    if (!likes) return alert("Faltan gustos.");
+    if (!phoneRaw || phoneRaw.length < 10)
+      return alert("Celular inválido (10 dígitos).");
+
+    const fullPhone = `${phoneCode}${phoneRaw}`;
+
+    await setDoc(doc(collection(db, "events", eventId, "list")), {
+      name,
+      phone: fullPhone,
+      likes,
+      manager: user.uid,
+      createdAt: Date.now(),
+    });
+    setNewPerson({ name: "", phone: "", likes: "" });
+
+    // Auto-llenar el buscador con el teléfono que acabas de registrar para que veas tus resultados luego
+    setSearchPhone(phoneRaw);
   };
 
   const handleDelete = async (id) => {
-    if (!confirm("¿Borrar?")) return;
-    await deleteDoc(doc(db, "eventos", EVENT_ID, "participantes", id));
+    if (confirm("¿Borrar?"))
+      await deleteDoc(doc(db, "events", eventId, "list", id));
   };
 
-  const generateMatches = async () => {
+  const runLottery = async () => {
     if (participants.length < 2) return alert("Mínimo 2 personas.");
-    
-    // Algoritmo Fisher-Yates (Mezcla justa)
     let pool = [...participants];
-    for (let i = pool.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [pool[i], pool[j]] = [pool[j], pool[i]];
-    }
-    
-    // Asignación circular (Cadena cerrada: A->B->C->A)
-    const newMatches = pool.map((giver, i) => ({
-      giver, receiver: pool[(i + 1) % pool.length],
-    }));
-    
-    // Guardar en 'resultados_oficiales' (Sobrescribe cualquier sorteo anterior)
-    try {
-      await setDoc(doc(db, "eventos", EVENT_ID, "sorteo", "resultados_oficiales"), {
-        pairs: JSON.stringify(newMatches), 
-        updatedAt: Date.now(),
-      });
-      setShowResults(true);
-      alert("¡Sorteo realizado con éxito!");
-    } catch (error) {
-      console.error("Error al guardar sorteo:", error);
-      alert("Error al guardar el sorteo. Verifica permisos.");
-    }
+    pool.sort(() => Math.random() - 0.5);
+
+    const pairs = pool.map((giver, i) => {
+      const receiver = pool[(i + 1) % pool.length];
+      return {
+        giverId: giver.id,
+        giverName: giver.name,
+        giverManager: giver.manager,
+        giverPhone: giver.phone,
+        receiver: receiver,
+      };
+    });
+
+    await setDoc(doc(db, "events", eventId, "meta", "results"), {
+      data: JSON.stringify(pairs),
+    });
+    await updateDoc(doc(db, "events", eventId), { status: "closed" });
   };
 
-  const sendWhatsApp = (match) => {
-    const text = `🎄 *Intercambio: ${config.eventName}*\n\nHola ${match.giver.name}, te tocó regalar a: \n🎁 *${match.receiver.name}*\n\n📝 *Deseos:* ${match.receiver.wishlist || "Sorpréndeme"}\n💰 *Presupuesto:* $${config.budget}`;
-    window.open(`https://wa.me/${match.giver.phone || ""}?text=${encodeURIComponent(text)}`, "_blank");
+  const sendWa = (match) => {
+    // Texto limpio con saltos de línea codificados manualmente si es necesario
+    const message = `🎄 *INTERCAMBIO: ${eventData.name}* 🎄\n\nHola ${match.giverName}, te tocó regalar a:\n🎁 *${match.receiver.name}*\n\n📝 *Gustos:* ${match.receiver.likes}\n💰 *Presupuesto:* $${eventData.budget}`;
+
+    // Usamos api.whatsapp.com que suele ser más robusto con encoding
+    const url = `https://api.whatsapp.com/send?phone=${
+      match.giverPhone
+    }&text=${encodeURIComponent(message)}`;
+    window.open(url, "_blank");
   };
 
-  return (
-    <div className="min-h-screen bg-slate-50 font-sans pb-12 text-slate-800">
-      <div className="bg-white p-6 sticky top-0 z-20 shadow-sm border-b border-slate-200">
-        <div className="max-w-2xl mx-auto space-y-4">
-          <input 
-            value={config.eventName} 
-            onChange={(e) => saveConfig({ eventName: e.target.value })}
-            className="text-2xl font-black text-rose-600 w-full outline-none bg-transparent" 
-          />
-          <div className="flex items-center gap-4 bg-slate-100 p-3 rounded-lg">
-            <DollarSign className="w-5 h-5 text-slate-600" />
-            <input 
-              type="number" value={config.budget} 
-              onChange={(e) => saveConfig({ budget: e.target.value })}
-              className="bg-transparent font-bold text-lg w-full outline-none" 
-            />
+  // --- LÓGICA DE AGRUPACIÓN (ÁRBOLES) ---
+  // Agrupa participantes por teléfono. La clave es el teléfono, el valor es un array ordenado por creación.
+  const groupedParticipants = participants.reduce((acc, p) => {
+    const key = p.phone || "SIN_TELEFONO";
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(p);
+    return acc;
+  }, {});
+
+  // Ordenar dentro de cada grupo por fecha de creación (El más viejo es el "padre")
+  Object.keys(groupedParticipants).forEach((key) => {
+    groupedParticipants[key].sort(
+      (a, b) => (a.createdAt || 0) - (b.createdAt || 0)
+    );
+  });
+
+  // --- VISTAS ---
+  if (!user)
+    return (
+      <div className="h-screen grid place-items-center bg-slate-50 p-4 font-sans">
+        <div className="text-center space-y-6">
+          <div className="flex justify-center">
+            <div className="bg-indigo-100 p-4 rounded-full">
+              <Gift size={40} className="text-indigo-600" />
+            </div>
           </div>
+          <h1 className="text-3xl font-black text-slate-800">
+            Intercambio Pro
+          </h1>
+          <button
+            onClick={login}
+            className="bg-slate-900 text-white px-8 py-4 rounded-2xl font-bold shadow-xl w-full flex justify-center gap-2"
+          >
+            <LogIn /> Entrar
+          </button>
         </div>
       </div>
+    );
 
-      <div className="max-w-2xl mx-auto p-4 space-y-8">
-        <section className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
-          <h2 className="font-bold text-lg mb-4 flex items-center gap-2">
-            <User className="w-5 h-5 text-indigo-600" /> Nuevo Participante
-          </h2>
-          <form onSubmit={handleRegister} className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <input placeholder="Nombre" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="p-3 bg-slate-50 rounded-lg border w-full" />
-              <input placeholder="WhatsApp (52...)" type="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="p-3 bg-slate-50 rounded-lg border w-full" />
+  if (!eventId || !eventData)
+    return (
+      <div className="max-w-md mx-auto p-6 space-y-8 pt-12 font-sans text-slate-800">
+        <div className="flex justify-between items-center">
+          <h2 className="text-2xl font-black">Bienvenido</h2>
+          <button
+            onClick={fullLogout}
+            className="text-xs text-red-500 font-bold border border-red-100 px-3 py-1 rounded-full bg-red-50"
+          >
+            Salir
+          </button>
+        </div>
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-3">
+          <label className="font-bold text-xs text-slate-400 uppercase">
+            Unirme con código
+          </label>
+          <div className="flex gap-2">
+            <input
+              value={joinCode}
+              onChange={(e) => setJoinCode(e.target.value)}
+              onKeyDown={(e) => handleEnter(e, createEvent)}
+              className="flex-1 p-3 bg-slate-50 rounded-xl font-mono text-center uppercase outline-none border focus:border-indigo-500"
+              placeholder="CÓDIGO"
+            />
+            <button
+              onClick={joinEvent}
+              className="bg-slate-800 text-white p-3 rounded-xl"
+            >
+              <ArrowRight />
+            </button>
+          </div>
+        </div>
+        <div className="bg-indigo-50 p-6 rounded-2xl border border-indigo-100 space-y-3">
+          <label className="font-bold text-xs text-indigo-400 uppercase">
+            Nuevo Evento
+          </label>
+          <input
+            placeholder="Nombre"
+            onChange={(e) => setNewEvent({ ...newEvent, name: e.target.value })}
+            onKeyDown={(e) => handleEnter(e, createEvent)}
+            className="w-full p-3 rounded-xl outline-none"
+          />
+          <input
+            placeholder="Presupuesto"
+            type="number"
+            onChange={(e) =>
+              setNewEvent({ ...newEvent, budget: e.target.value })
+            }
+            onKeyDown={(e) => handleEnter(e, createEvent)}
+            className="w-full p-3 rounded-xl outline-none"
+          />
+          <button
+            onClick={createEvent}
+            onKeyDown={(e) => handleEnter(e, createEvent)}
+            className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold mt-2"
+          >
+            Crear
+          </button>
+        </div>
+      </div>
+    );
+
+  // DASHBOARD
+  const isAdmin = eventData.admin === user.uid;
+  const isClosed = eventData.status === "closed";
+
+  // LÓGICA DE FILTRADO DE RESULTADOS:
+  // 1. Si yo lo creé (Manager UID), es mío.
+  // 2. Si el teléfono coincide con lo que busqué, es mío.
+  const myResults = results.filter((r) => {
+    const isMyManager = r.giverManager === user.uid;
+    // Comparamos los últimos 10 dígitos para evitar líos con ladas
+    const searchClean = searchPhone.replace(/[^0-9]/g, "");
+    const isMyPhone =
+      searchClean.length >= 10 && r.giverPhone.includes(searchClean);
+    return isMyManager || isMyPhone;
+  });
+
+  return (
+    <div className="min-h-screen bg-slate-50 pb-32 font-sans text-slate-800">
+      <div className="bg-white p-4 sticky top-0 z-20 border-b border-slate-200 shadow-sm flex justify-between items-center">
+        <div>
+          <h1 className="font-bold text-lg">{eventData.name}</h1>
+          <p className="text-xs text-slate-500 font-bold">
+            CÓDIGO:{" "}
+            <span className="bg-indigo-50 text-indigo-700 px-2 rounded font-mono select-all">
+              {eventId}
+            </span>
+          </p>
+        </div>
+        <button
+          onClick={fullLogout}
+          className="bg-red-50 p-2 rounded-full text-red-500"
+        >
+          <LogOut size={18} />
+        </button>
+      </div>
+
+      <div className="max-w-md mx-auto p-4 space-y-6">
+        {/* ZONA DE RESULTADOS */}
+        {isClosed && (
+          <section className="space-y-4 animate-in fade-in slide-in-from-bottom-4">
+            <div className="bg-emerald-100 text-emerald-800 p-4 rounded-xl flex items-center gap-3">
+              <Gift />{" "}
+              <div>
+                <p className="font-bold">¡Resultados Listos!</p>
+              </div>
             </div>
-            <textarea placeholder="Gustos / Tallas..." value={form.wishlist} onChange={(e) => setForm({ ...form, wishlist: e.target.value })} className="w-full p-3 bg-slate-50 rounded-lg border h-20 resize-none" />
-            <div className="flex gap-2 overflow-x-auto pb-2">
-              {Object.entries(CATEGORIES).map(([k, v]) => {
-                const Icon = v.icon;
-                return (
-                  <button key={k} type="button" onClick={() => setForm({ ...form, category: k })} className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-bold whitespace-nowrap border-2 ${form.category === k ? `border-${v.color.split('-')[1]}-500 ${v.bg} ${v.color}` : 'border-transparent bg-slate-100 text-slate-400'}`}>
-                    <Icon className="w-4 h-4" /> {v.label}
+
+            {/* BUSCADOR DE RESULTADOS (SOLO SI NO VEO NADA) */}
+            {myResults.length === 0 && (
+              <div className="bg-white p-6 rounded-2xl border-2 border-dashed border-indigo-200 text-center space-y-3">
+                <p className="font-bold text-indigo-900">
+                  ¿No ves tus resultados?
+                </p>
+                <p className="text-sm text-slate-500">
+                  Si entraste con código, escribe tu teléfono para ver a quién
+                  le regalas.
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    value={searchPhone}
+                    onChange={(e) => setSearchPhone(e.target.value)}
+                    placeholder="Tu teléfono (10 dígitos)"
+                    className="flex-1 p-3 bg-slate-50 rounded-xl border outline-none"
+                    type="tel"
+                  />
+                  <button className="bg-indigo-600 text-white p-3 rounded-xl">
+                    <Search size={20} />
                   </button>
-                )
-              })}
-            </div>
-            <button disabled={!form.name} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl">Agregar</button>
-          </form>
-        </section>
-
-        <section>
-          <div className="flex justify-between items-end mb-3">
-            <h3 className="font-bold text-slate-500 text-xs tracking-wider">Registrados ({participants.length})</h3>
-            {participants.length > 1 && (
-              <button onClick={generateMatches} className="bg-rose-500 text-white px-4 py-2 rounded-lg text-sm font-bold flex gap-2 shadow-lg hover:scale-105 transition">
-                <Shuffle className="w-4 h-4" /> Sortear
-              </button>
+                </div>
+              </div>
             )}
-          </div>
-          <div className="grid gap-3">
-            {participants.map((p) => {
-              const Cat = CATEGORIES[p.category] || CATEGORIES.adult;
-              const CIcon = Cat.icon;
-              return (
-                <div key={p.id} className="bg-white p-4 rounded-xl border border-slate-100 flex justify-between group">
-                  <div className="flex gap-3">
-                    <div className={`p-2 rounded-lg h-fit ${Cat.bg} ${Cat.color}`}><CIcon className="w-5 h-5" /></div>
-                    <div>
-                      <p className="font-bold text-slate-800">{p.name}</p>
-                      <p className="text-xs text-slate-500 line-clamp-1">{p.wishlist}</p>
-                    </div>
-                  </div>
-                  <button onClick={() => handleDelete(p.id)} className="text-slate-300 hover:text-red-500"><Trash2 className="w-5 h-5" /></button>
-                </div>
-              );
-            })}
-          </div>
-        </section>
 
-        {matches.length > 0 && (
-          <section className="bg-indigo-900 text-white rounded-2xl p-6 shadow-2xl relative overflow-hidden">
-            <div className="flex justify-between items-center mb-6 relative z-10">
-              <h2 className="text-2xl font-bold">Resultados</h2>
-              <button onClick={() => setShowResults(!showResults)} className="bg-white/10 p-2 rounded-lg">{showResults ? <EyeOff /> : <Eye />}</button>
-            </div>
-            <div className="space-y-4 relative z-10">
-              {matches.map((m, i) => (
-                <div key={i} className={`bg-white/5 border border-white/10 p-4 rounded-xl ${showResults ? '' : 'hidden'}`}>
-                  <div className="flex justify-between mb-2">
-                    <span className="font-bold">{m.giver.name}</span>
-                    <span className="text-rose-400">➜ {m.receiver.name}</span>
-                  </div>
-                  <button onClick={() => sendWhatsApp(m)} className="w-full bg-emerald-500 text-white py-2 rounded-lg font-bold text-sm flex justify-center gap-2"><Send className="w-4 h-4" /> WhatsApp</button>
+            {myResults.map((m, i) => (
+              <div
+                key={i}
+                className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm"
+              >
+                <p className="text-xs font-bold text-slate-400 uppercase">
+                  De parte de {m.giverName}
+                </p>
+                <p className="text-2xl font-black text-slate-800 mb-2">
+                  {m.receiver.name}
+                </p>
+                <div className="bg-slate-50 p-3 rounded-xl text-sm text-slate-600 mb-4 border border-slate-100">
+                  "{m.receiver.likes}"
                 </div>
-              ))}
-              {!showResults && <p className="text-center text-indigo-300 italic">Oculto</p>}
+                <button
+                  onClick={() => sendWa(m)}
+                  className="w-full py-3 bg-green-500 text-white font-bold rounded-xl text-sm flex justify-center gap-2 hover:bg-green-600"
+                >
+                  <Share2 size={18} /> Enviar WhatsApp
+                </button>
+              </div>
+            ))}
+          </section>
+        )}
+
+        {/* ZONA DE REGISTRO (SI ESTÁ ABIERTO) */}
+        {!isClosed && (
+          <section className="bg-white p-5 rounded-3xl shadow-sm border border-slate-100">
+            <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
+              <User size={20} className="text-indigo-600" /> Nuevo Participante
+            </h3>
+            <div className="space-y-3">
+              <input
+                placeholder="Nombre"
+                value={newPerson.name}
+                onChange={(e) =>
+                  setNewPerson({ ...newPerson, name: e.target.value })
+                }
+                className="w-full p-3 bg-slate-50 rounded-xl border outline-none focus:border-indigo-500"
+              />
+              <div className="flex gap-2">
+                <select
+                  value={phoneCode}
+                  onChange={(e) => setPhoneCode(e.target.value)}
+                  className="p-3 bg-slate-50 rounded-xl border outline-none w-24 text-sm font-bold"
+                >
+                  {COUNTRY_CODES.map((c) => (
+                    <option key={c.code} value={c.code}>
+                      +{c.code}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="tel"
+                  maxLength={15}
+                  value={newPerson.phone}
+                  onChange={(e) =>
+                    setNewPerson({
+                      ...newPerson,
+                      phone: e.target.value.replace(/[^0-9]/g, ""),
+                    })
+                  }
+                  className="flex-1 p-3 bg-slate-50 rounded-xl border outline-none focus:border-indigo-500"
+                  placeholder="WhatsApp"
+                />
+              </div>
+              <textarea
+                placeholder="Gustos / Tallas..."
+                value={newPerson.likes}
+                onChange={(e) =>
+                  setNewPerson({ ...newPerson, likes: e.target.value })
+                }
+                className="w-full p-3 bg-slate-50 rounded-xl border h-20 resize-none outline-none focus:border-indigo-500"
+              />
+              <button
+                onClick={addPerson}
+                className="w-full bg-slate-900 text-white py-3 rounded-xl font-bold flex justify-center gap-2 hover:scale-[1.01] transition"
+              >
+                <Plus size={20} /> Guardar
+              </button>
             </div>
           </section>
         )}
+
+        {/* LISTA AGRUPADA (ÁRBOLES) */}
+        <section>
+          <h3 className="font-bold text-slate-400 text-xs uppercase mb-3">
+            Registrados en el Evento
+          </h3>
+
+          {Object.entries(groupedParticipants).map(([phone, group]) => {
+            // El primero es el "Padre"
+            const head = group[0];
+            // Los demás son hijos/pareja
+            const dependents = group.slice(1);
+            const isMyGroup = group.some((p) => p.manager === user.uid);
+
+            // Solo muestro botón borrar si soy el manager de ese grupo Y el evento está abierto
+            return (
+              <div
+                key={phone}
+                className="mb-4 bg-white rounded-2xl border border-slate-100 overflow-hidden shadow-sm"
+              >
+                {/* CABECERA (PRIMER REGISTRADO) */}
+                <div className="p-4 bg-slate-50/50 flex justify-between items-center">
+                  <div className="flex items-center gap-3">
+                    <div className="bg-indigo-100 text-indigo-600 h-10 w-10 rounded-full flex items-center justify-center font-bold">
+                      {head.name.charAt(0)}
+                    </div>
+                    <div>
+                      <p className="font-bold text-slate-800">{head.name}</p>
+                      <p className="text-xs text-slate-400 font-mono">
+                        +{head.phone || "?"}
+                      </p>
+                    </div>
+                  </div>
+                  {!isClosed && head.manager === user.uid && (
+                    <button
+                      onClick={() => handleDelete(head.id)}
+                      className="text-slate-300 hover:text-red-500"
+                    >
+                      <Trash2 size={18} />
+                    </button>
+                  )}
+                </div>
+
+                {/* DEPENDIENTES (HIJOS/PAREJA) */}
+                {dependents.length > 0 && (
+                  <div className="border-t border-slate-100">
+                    {dependents.map((dep) => (
+                      <div
+                        key={dep.id}
+                        className="p-3 pl-16 flex justify-between items-center hover:bg-slate-50"
+                      >
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full bg-slate-300"></div>
+                          <div>
+                            <p className="font-medium text-sm text-slate-700">
+                              {dep.name}
+                            </p>
+                            <p className="text-[10px] text-slate-400 truncate w-32">
+                              {dep.likes}
+                            </p>
+                          </div>
+                        </div>
+                        {!isClosed && dep.manager === user.uid && (
+                          <button
+                            onClick={() => handleDelete(dep.id)}
+                            className="text-slate-300 hover:text-red-500"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </section>
       </div>
+
+      {isAdmin && !isClosed && (
+        <div className="fixed bottom-6 left-0 w-full flex justify-center px-4 pointer-events-none">
+          <button
+            onClick={runLottery}
+            disabled={participants.length < 2}
+            className="pointer-events-auto bg-rose-600 disabled:bg-slate-400 text-white w-full max-w-md py-4 rounded-2xl font-black text-lg shadow-2xl flex justify-center gap-2 hover:scale-105 transition"
+          >
+            <Shuffle /> SORTEAR
+          </button>
+        </div>
+      )}
     </div>
   );
 }
